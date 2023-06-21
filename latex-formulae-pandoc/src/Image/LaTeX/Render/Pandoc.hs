@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE OverloadedStrings #-}
 module Image.LaTeX.Render.Pandoc
        ( -- * Data URIs
          convertFormulaDataURI
@@ -32,6 +33,7 @@ import Codec.Picture
 import Control.Applicative
 import Data.IORef
 import System.FilePath
+import Data.Text (unpack, pack)
 
 import qualified Data.ByteString.Base64.Lazy as B64
 import qualified Data.ByteString.Lazy.Char8 as BS
@@ -80,14 +82,15 @@ convertFormulaDataURI
   :: EnvironmentOptions           -- ^ System environment settings
   -> PandocFormulaOptions         -- ^ Formula display settings
   -> Inline -> IO Inline
-convertFormulaDataURI = convertFormulaDataURIWith . imageForFormula
+convertFormulaDataURI e f =
+   convertFormulaDataURIWith (imageForFormula e) f
 
 -- | Convert all formulae in a pandoc document to images, embedding the images into the HTML using Data URIs.
 convertAllFormulaeDataURI
   :: EnvironmentOptions           -- ^ System environment settings
   -> PandocFormulaOptions         -- ^ Formula display settings
   -> Pandoc -> IO Pandoc
-convertAllFormulaeDataURI e = walkM . convertFormulaDataURI e
+convertAllFormulaeDataURI e f (Pandoc m bs) = Pandoc m <$> walkM (convertFormulaDataURI e f) bs
 
 -- | A generalisation of 'convertFormulaDataURI' which allows the actual image rendering
 --   function to be customised, so that (e.g) caching can be added or other image processing.
@@ -96,20 +99,21 @@ convertFormulaDataURIWith
      -- ^ Function that renders a formula, such as @imageForFormula defaultEnv@
   -> PandocFormulaOptions -- ^ Formula display settings
   -> Inline -> IO Inline
-convertFormulaDataURIWith f o (Math t s) = f (formulaOptions o t) s >>= \case
+convertFormulaDataURIWith f o = \case
+ Math t s -> f (formulaOptions o t) (unpack s) >>= \case
    Left e -> return $ errorDisplay o e
    Right (b,i) -> let
        Right bs = encodeDynamicPng i
-       dataUri = "data:image/png;base64," ++ BS.unpack (B64.encode bs)
+       dataUri = "data:image/png;base64," <> BS.unpack (B64.encode bs)
        (ow,oh) = dimensions i
        (w,h) = (ow `div` shrinkBy o, oh `div` shrinkBy o)
      in return $ RawInline (Format "html") $
-        "<img width="  ++ show w ++
-            " alt=\"" ++ processAltString s ++ "\"" ++
-            " height=" ++ show h ++
-            " src=\""  ++ dataUri ++ "\"" ++
-            " class="  ++ (case t of InlineMath -> "inline-math"; _ -> "display-math") ++
-            " style=\"margin:0; vertical-align:-" ++ show (b `div` shrinkBy o) ++ "px;\"/>"
+        "<img width="  <> pack (show w) <>
+            " alt=\"" <> pack (processAltString (unpack s)) <> "\"" <>
+            " height=" <> pack (show h) <>
+            " src=\""  <> pack dataUri <> "\"" <>
+            " class="  <> (case t of InlineMath -> "inline-math"; _ -> "display-math") <>
+            " style=\"vertical-align:-" <> pack (show (b `div` shrinkBy o)) <> "px;\"/>"
    where processAltString = (>>= \case
                  '<'  -> "&lt;"
                  '>'  -> "&gt;"
@@ -120,7 +124,7 @@ convertFormulaDataURIWith f o (Math t s) = f (formulaOptions o t) s >>= \case
                  '\r' -> " "
                  '\t' -> " "
                  x    -> [x])
-convertFormulaDataURIWith _ _ x = return x
+ x -> return x
 
 -- | A generalisation of 'convertAllFormulaeDataURI' which allows the actual image rendering
 --   function to be customised, so that (e.g) caching can be added or other image processing.
@@ -151,7 +155,7 @@ convertFormulaFilesWith
   -> FilePath                     -- ^ Name of image directory where images will be stored
   -> PandocFormulaOptions         -- ^ Formula display settings
   -> Inline -> IO Inline
-convertFormulaFilesWith f ns bn o (Math t s) = f (formulaOptions o t) s >>= \case
+convertFormulaFilesWith f ns bn o (Math t s) = f (formulaOptions o t) (unpack s) >>= \case
    Left e -> return $ errorDisplay o e
    Right (b,i) -> do
      fn <- readIORef ns
@@ -161,11 +165,11 @@ convertFormulaFilesWith f ns bn o (Math t s) = f (formulaOptions o t) s >>= \cas
          (w,h) = (ow `div` shrinkBy o, oh `div` shrinkBy o)
      _ <- writeDynamicPng uri i
      return $ RawInline (Format "html") $
-        "<img width="  ++ show w ++
-            " height=" ++ show h ++
-            " src=\""  ++ uri ++ "\"" ++
-            " class="  ++ (case t of InlineMath -> "inline-math"; _ -> "display-math") ++
-            " style=\"margin:0; vertical-align:-" ++ show (b `div` shrinkBy o) ++ "px;\"/>"
+        "<img width="  <> pack (show w) <>
+            " height=" <> pack (show h) <>
+            " src=\""  <> pack uri <> "\"" <>
+            " class="  <> (case t of InlineMath -> "inline-math"; _ -> "display-math") <>
+            " style=\"margin:0; vertical-align:-" <> pack (show (b `div` shrinkBy o)) <> "px;\"/>"
 convertFormulaFilesWith _ _ _ _ x = return x
 
 -- | Convert a formula in a pandoc document to an image, storing the images in a separate directory.
@@ -207,11 +211,11 @@ hideError = const $ Str blank
 displayError :: RenderError -> Inline
 displayError ImageIsEmpty           = pandocError [Str "The rendered image was empty"]
 displayError CannotDetectBaseline   = pandocError [Str "Cannot detect baseline in rendered image"]
-displayError (LaTeXFailure str)     = pandocError [Str "LaTeX failed:", LineBreak, Code nullAttr str]
-displayError (DVIPSFailure str)     = pandocError [Str "DVIPS failed:", LineBreak, Code nullAttr str]
-displayError (IMConvertFailure str) = pandocError [Str "convert failed:", LineBreak, Code nullAttr str]
-displayError (ImageReadError str)   = pandocError [Str "Error reading image:", LineBreak, Code nullAttr str]
-displayError (IOException e)        = pandocError [Str "IO Exception:", LineBreak, Code nullAttr $ show e]
+displayError (LaTeXFailure str)     = pandocError [Str "LaTeX failed:", LineBreak, Code nullAttr (pack str)]
+displayError (DVIPSFailure str)     = pandocError [Str "DVIPS failed:", LineBreak, Code nullAttr (pack str)]
+displayError (IMConvertFailure str) = pandocError [Str "convert failed:", LineBreak, Code nullAttr (pack str)]
+displayError (ImageReadError str)   = pandocError [Str "Error reading image:", LineBreak, Code nullAttr (pack str)]
+displayError (IOException e)        = pandocError [Str "IO Exception:", LineBreak, Code nullAttr $ pack $ show e]
 
 pandocError :: [Inline] -> Inline
 pandocError = Strong . (Emph [Str "Error:"] :)
